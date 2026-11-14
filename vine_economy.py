@@ -97,6 +97,7 @@ def default_params():
         bs=1.5,       # bias toward cells next to a support (thigmotropism)
         bl=3.0,       # bias toward brighter cells (phototropism)
         kshade=0.12,  # each living leaf on the line to the window dims light by this
+        lignify=True, # False = wood ablation: every channel relaxes at the fast green rate
         free=False,   # FREE reference: nothing costs anything, nothing ever closes
     )
 
@@ -104,7 +105,7 @@ def default_params():
 NMAX = 40000
 PKEYS = ["gp", "Dh", "Dmax", "Qh", "eta", "m", "kfree", "s0", "tau", "kR", "cgrow",
          "D0", "Ddead", "Dwood", "pb", "cbud", "maxchild", "earn_frac", "gstarve",
-         "rho", "cmat", "bu", "bs", "bl", "free", "lam", "Tdry", "Rfree", "pb_root"]
+         "rho", "cmat", "bu", "bs", "bl", "free", "lam", "Tdry", "Rfree", "pb_root", "lignify"]
 NST = 14   # R, prod, deliv, draw, upkeep, famine, n_alive, n_dry, grow_events,
            # grow_on_own_wood, grow_on_room_support, grow_unsupported,
            # deaths (channels that closed), sum of light on segments when they closed
@@ -196,6 +197,7 @@ def step(n, px, py, parent, D, alive, tip, G, a, nchild, Q, deliv, prod, occ, dr
                                               pv[25], pv[26])
     Rfree = pv[27]
     pb_root = pv[28]
+    lignify = pv[29]
     free_mode = free > 0.5
     R = st[0]
     ri = 0
@@ -272,7 +274,7 @@ def step(n, px, py, parent, D, alive, tip, G, a, nchild, Q, deliv, prod, occ, dr
                 continue
             target = Dmax * Q[i] / (Q[i] + Qh)
             # lignification: thick wood changes slowly, green shoots change fast
-            w = 1.0 + D[i] / Dwood
+            w = 1.0 + D[i] / Dwood if lignify > 0.5 else 1.0
             dD = (eta / (w * w)) * (target - D[i]) - gstarve * famine * D[i]
             if dD < 0.0:
                 R += rho * cmat * (-dD)

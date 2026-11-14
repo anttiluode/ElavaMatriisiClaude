@@ -141,9 +141,8 @@ def fig_pruning(res):
         a = np.nanmean([r["mean_light_alive"] for r in q])
         d = np.nanmean([r["mean_light_at_death"] for r in q])
         axes[0].bar([k * 3, k * 3 + 1], [a, d], color=[GREEN, DRY])
-        axes[0].text(k * 3 + 0.5, max(a, d) * 1.05, room, ha="center", fontsize=9)
     axes[0].set_xticks([0, 1, 3, 4])
-    axes[0].set_xticklabels(["living", "at closing", "living", "at closing"], fontsize=8)
+    axes[0].set_xticklabels(["bright\nliving", "bright\nat closing", "dim\nliving", "dim\nat closing"], fontsize=8)
     axes[0].set_ylabel("light actually received\n(after self-shading)")
     axes[0].set_title("Which channels close? (no prune rule)", fontsize=9)
     for k, room in enumerate(["bright", "dim"]):
@@ -164,12 +163,12 @@ def fig_pruning(res):
     plt.close(fig)
 
 
-def gif_life(tau=1000.0, seed=0, every=150):
+def gif_life(tau=1000.0, seed=0, every=300):
     from matplotlib.animation import FuncAnimation, PillowWriter
     p = ve.default_params()
     p["tau"] = tau
     r = ve.run(p, seed=seed, frames_every=every)
-    fig, ax = plt.subplots(figsize=(3.6, 4.6))
+    fig, ax = plt.subplots(figsize=(3.0, 3.9), dpi=80)
 
     def upd(k):
         ax.clear()
@@ -178,7 +177,7 @@ def gif_life(tau=1000.0, seed=0, every=150):
         draw_room(ax, r["frames"][k], L0, r["S"], f"step {t}", cut=r["cut"] if t >= 12000 else None)
 
     anim = FuncAnimation(fig, upd, frames=len(r["frames"]))
-    anim.save(f"{OUT}/life.gif", writer=PillowWriter(fps=10))
+    anim.save(f"{OUT}/life.gif", writer=PillowWriter(fps=8))
     plt.close(fig)
 
 
