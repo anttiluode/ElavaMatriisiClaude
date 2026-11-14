@@ -98,6 +98,9 @@ def default_params():
         bl=3.0,       # bias toward brighter cells (phototropism)
         kshade=0.12,  # each living leaf on the line to the window dims light by this
         lignify=True, # False = wood ablation: every channel relaxes at the fast green rate
+        floor=True,   # False = leakage control: no hard D_dead cut-off, channels only leak
+        inherit=False,  # True = each shoot carries its own tau; buds inherit it, mutated
+        mut=0.25,     # log-normal mutation of inherited tau per bud
         free=False,   # FREE reference: nothing costs anything, nothing ever closes
     )
 
@@ -105,7 +108,7 @@ def default_params():
 NMAX = 40000
 PKEYS = ["gp", "Dh", "Dmax", "Qh", "eta", "m", "kfree", "s0", "tau", "kR", "cgrow",
          "D0", "Ddead", "Dwood", "pb", "cbud", "maxchild", "earn_frac", "gstarve",
-         "rho", "cmat", "bu", "bs", "bl", "free", "lam", "Tdry", "Rfree", "pb_root", "lignify"]
+         "rho", "cmat", "bu", "bs", "bl", "free", "lam", "Tdry", "Rfree", "pb_root", "lignify", "floor", "inherit", "mut"]
 NST = 14   # R, prod, deliv, draw, upkeep, famine, n_alive, n_dry, grow_events,
            # grow_on_own_wood, grow_on_room_support, grow_unsupported,
            # deaths (channels that closed), sum of light on segments when they closed
@@ -141,11 +144,15 @@ class Vine:
         self.occ = -np.ones((W, H), np.int64)
         self.dry = np.zeros((W, H), np.bool_)
         self.dry_age = np.zeros((W, H), np.int64)
+        self.taui = np.zeros(NMAX)
+        self.closed = np.zeros(NMAX, np.bool_)
         self.S = make_room()
         self.n = 0
         x, y = POT
         self._add(-1, x, y, 1.0, False)            # the pot / root system
         self._add(0, x, y + 1, params["D0"], True) # the first shoot
+        t0 = float(params["tau"]) if np.isfinite(float(params["tau"])) else 1e7
+        self.taui[0] = self.taui[1] = t0
         self.st = np.zeros(NST)
         self.st[0] = params["R0"]
 
@@ -188,7 +195,7 @@ def _support_kind(x, y, self_id, par_id, parent, alive, D, occ, dry, S, Dwood):
 
 @njit(cache=True)
 def step(n, px, py, parent, D, alive, tip, G, a, nchild, Q, deliv, prod, occ, dry, dry_age,
-         S, L, pv, st, rand_u):
+         S, L, pv, st, rand_u, taui, closed):
     gp, Dh, Dmax, Qh, eta, m, kfree, s0, tau, kR, cgrow = (pv[0], pv[1], pv[2], pv[3], pv[4],
                                                           pv[5], pv[6], pv[7], pv[8], pv[9], pv[10])
     D0, Ddead, Dwood, pb, cbud, maxchild, earn_frac, gstarve = (pv[11], pv[12], pv[13], pv[14],
@@ -198,6 +205,9 @@ def step(n, px, py, parent, D, alive, tip, G, a, nchild, Q, deliv, prod, occ, dr
     Rfree = pv[27]
     pb_root = pv[28]
     lignify = pv[29]
+    hard_floor = pv[30] > 0.5
+    inherit = pv[31] > 0.5
+    mut = pv[32]
     free_mode = free > 0.5
     R = st[0]
     ri = 0
@@ -231,7 +241,8 @@ def step(n, px, py, parent, D, alive, tip, G, a, nchild, Q, deliv, prod, occ, dr
     tot_want = 0.0
     for i in range(n):
         if alive[i] and tip[i]:
-            draw[i] = s0 if free_mode else s0 * np.exp(-a[i] / tau)
+            tau_eff = taui[i] if inherit else tau
+            draw[i] = s0 if free_mode else s0 * np.exp(-a[i] / tau_eff)
             tot_want += draw[i]
     scale = 1.0
     if (not free_mode) and tot_want > 0.0:
@@ -285,9 +296,19 @@ def step(n, px, py, parent, D, alive, tip, G, a, nchild, Q, deliv, prod, occ, dr
     deaths = 0.0
     death_light = 0.0
     for i in range(1, n):
-        if alive[i] and (D[i] < Ddead or not alive[parent[i]]):
-            deaths += 1.0
-            death_light += L[px[i], py[i]]
+        if alive[i] and not hard_floor:
+            # leakage control: no floor. A channel below D_dead is only *counted* as
+            # closed (once per closing); it stays in the body, leaking toward zero.
+            if D[i] < Ddead and not closed[i]:
+                closed[i] = True
+                deaths += 1.0
+                death_light += L[px[i], py[i]]
+            elif D[i] >= Ddead:
+                closed[i] = False
+        if alive[i] and ((hard_floor and D[i] < Ddead) or not alive[parent[i]]):
+            if hard_floor or not closed[i]:
+                deaths += 1.0
+                death_light += L[px[i], py[i]]
             alive[i] = False
             tip[i] = False
             dry[px[i], py[i]] = True
@@ -353,6 +374,8 @@ def step(n, px, py, parent, D, alive, tip, G, a, nchild, Q, deliv, prod, occ, dr
         G[j] = G[i]
         G[i] = 0.0
         a[j] = a[i]                          # the loan clock follows the shoot
+        taui[j] = taui[i]                    # and so does the shoot's patience
+        closed[j] = False
         tip[i] = False
         nchild[i] += 1
         nchild[j] = 0
@@ -396,6 +419,15 @@ def step(n, px, py, parent, D, alive, tip, G, a, nchild, Q, deliv, prod, occ, dr
             tip[j] = True
             G[j] = 0.0
             a[j] = 0.0                       # a fresh bud gets a fresh loan
+            closed[j] = False
+            if inherit:                      # ... and its parent's patience, mutated
+                u1 = rand_u[ri % nr] + 1e-12
+                u2 = rand_u[(ri + 1) % nr]
+                ri += 2
+                z = np.sqrt(-2.0 * np.log(u1)) * np.cos(2.0 * np.pi * u2)
+                taui[j] = min(taui[i] * np.exp(mut * z), 1e7)
+            else:
+                taui[j] = taui[i]
             nchild[i] += 1
             nchild[j] = 0
             occ[xx, yy] = j
@@ -453,26 +485,33 @@ def shade(L0, occ, alive, wx, wy, kshade):
 # One life of one vine
 # ----------------------------------------------------------------------------
 def run(params, seed=0, T=18000, t_move=6000, t_cut=12000, log_every=50, frames_every=0,
-        snap_times=()):
-    """Phase 1: window top-right.  At t_move the window moves to top-left.
-    At t_cut the busiest living segment in the middle band of the room is cut."""
+        snap_times=(), schedule=None, cut_times=None):
+    """Default life: window top-right; at t_move it moves top-left; at t_cut the busiest
+    living segment in the middle band is cut.  `schedule` = [(t, 'R'|'L'), ...] and
+    `cut_times` = [t, ...] override that (use cut_times=[] for no cut)."""
     rng = np.random.default_rng(seed)
     v = Vine(params)
-    win1, win2 = (W - 4, H - 4), (4, H - 4)
-    L1 = light_field(*win1)
-    L2 = light_field(*win2)
-    L0, win = L1, win1
+    wins = {"R": (W - 4, H - 4), "L": (4, H - 4)}
+    fields = {k: light_field(*w) for k, w in wins.items()}
+    if schedule is None:
+        schedule = [(0, "R"), (t_move, "L")]
+    if cut_times is None:
+        cut_times = [t_cut]
+    sched = dict(schedule)
+    side = schedule[0][1]
+    L0, win = fields[side], wins[side]
     kshade = params.get("kshade", 0.12)
     L = L0
     log, snaps, frames = [], {}, []
     cut_info = None
     rand_buf = rng.random(400009)
     for t in range(T):
-        if t == t_move:
-            L0, win = L2, win2
+        if t in sched:
+            side = sched[t]
+            L0, win = fields[side], wins[side]
         if t % 10 == 0:
             L = shade(L0, v.occ, v.alive, win[0], win[1], kshade) if kshade > 0 else L0
-        if t == t_cut:
+        if t in cut_times:
             best, bi = -1.0, -1
             for i in range(1, v.n):
                 if v.alive[i] and 26 <= v.py[i] <= 44 and v.Q[i] > best:
@@ -483,25 +522,39 @@ def run(params, seed=0, T=18000, t_move=6000, t_cut=12000, log_every=50, frames_
         off = int(rng.integers(0, 200000))
         v.n = step(v.n, v.px, v.py, v.parent, v.D, v.alive, v.tip, v.G, v.a, v.nchild, v.Q,
                    v.deliv, v.prod, v.occ, v.dry, v.dry_age, v.S, L, v.pv, v.st,
-                   rand_buf[off:])
+                   rand_buf[off:], v.taui, v.closed)
         if t % log_every == 0:
-            alive = v.alive[:v.n]
-            ax, ay = v.px[:v.n][alive], v.py[:v.n][alive]
-            Lm = L0[ax, ay].mean() if alive.any() else 0.0
-            Lsh = L[ax, ay].mean() if alive.any() else 0.0
-            log.append((t, *v.st[:8], Lm / L0.mean(), int(v.tip[:v.n][alive].sum()), Lsh,
-                        v.st[12], v.st[13]))
+            n = v.n
+            alive_all = v.alive[:n]
+            alive = alive_all.copy()
+            alive[0] = False                 # D-weighted measures leave out the pot
+            ax, ay, aD = v.px[:n][alive], v.py[:n][alive], v.D[:n][alive]
+            if alive.any():
+                Lm = L0[v.px[:n][alive_all], v.py[:n][alive_all]].mean()
+                Lsh = L[v.px[:n][alive_all], v.py[:n][alive_all]].mean()
+                alignD = (aD * L0[ax, ay]).sum() / aD.sum() / L0.mean()
+                lt = np.log(np.maximum(v.taui[:n][alive], 1.0))
+                logtau = (aD * lt).sum() / aD.sum()
+                upper = ay >= 40
+                wood_R = aD[(ax >= W // 2) & upper].sum()
+                wood_L = aD[(ax < W // 2) & upper].sum()
+            else:
+                Lm = Lsh = alignD = logtau = wood_R = wood_L = 0.0
+            log.append((t, *v.st[:8], Lm / L0.mean(), int(v.tip[:n][v.alive[:n]].sum()), Lsh,
+                        v.st[12], v.st[13], alignD, logtau, wood_R, wood_L))
         if t in snap_times:
             snaps[t] = snapshot(v)
         if frames_every and t % frames_every == 0:
             frames.append(snapshot(v))
     return dict(log=np.array(log), snaps=snaps, frames=frames, cut=cut_info,
-                final=snapshot(v), L1=L1, L2=L2, S=v.S, st=v.st.copy())
+                final=snapshot(v), L1=fields["R"], L2=fields["L"], S=v.S, st=v.st.copy(),
+                taui=v.taui[:v.n][v.alive[:v.n]].copy(), Dalive=v.D[:v.n][v.alive[:v.n]].copy())
 
 
 # columns of the log
 LOGCOLS = ["t", "R", "prod", "deliv", "draw", "upkeep", "famine", "alive", "dry", "align",
-           "tips", "L_alive", "deaths_cum", "death_light_cum"]
+           "tips", "L_alive", "deaths_cum", "death_light_cum", "align_D", "logtau_D",
+           "wood_R", "wood_L"]
 
 
 def snapshot(v):
