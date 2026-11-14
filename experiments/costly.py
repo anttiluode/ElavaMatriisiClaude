@@ -15,7 +15,7 @@ ROOT = os.path.join(HERE, "..")
 sys.path.insert(0, ROOT)
 import vine_economy as ve
 
-COSTLY = dict(gp=0.10, pb=2e-3, cgrow=1.0, R0=80.0, kR=0.02)
+COSTLY = dict(gp=0.10, pb=2e-3, cgrow=0.7, R0=150.0, kR=0.02)
 TAUS = [300.0, 600.0, 1000.0, 2000.0, 4000.0, 10000.0, float("inf")]
 TAU0 = [300.0, 1000.0, 10000.0]
 SEEDS = range(8)
@@ -54,12 +54,18 @@ if __name__ == "__main__":
                       f"(sd {np.std([r['life_income'] for r in q]):4.2f})  reached {sum(r['established'] for r in q)}/8  "
                       f"tips {np.mean([r['tips'] for r in q]):4.1f}  draw {np.mean([r['draw'] for r in q]):.3f}  "
                       f"famine {100*np.mean([r['famine'] for r in q]):.1f}%", flush=True)
-        if part in ("inherit", "both"):
-            ih = list(pool.imap_unordered(inherit, [(t, s) for t in TAU0 for s in SEEDS]))
-            json.dump(ih, open(os.path.join(ROOT, "results/costly_inherit.json"), "w"), default=str)
+        if part in ("inherit", "both", "summary"):
+            path = os.path.join(ROOT, "results/costly_inherit.json")
+            if part == "summary":
+                ih = json.load(open(path))
+            else:
+                ih = list(pool.imap_unordered(inherit, [(t, s) for t in TAU0 for s in SEEDS]))
+                json.dump(ih, open(path, "w"), default=str)
             for t0 in TAU0:
                 q = [r for r in ih if r["tau0"] == t0]
-                ends = [np.exp(np.nanmean(np.array(r["logtau"])[-60:])) for r in q if r["alive"][-1] > 0]
+                # body tau at the end = conductance-weighted tau of the living vine at its last
+                # logged step (lives with no living segment at the end are left out)
+                ends = [float(np.exp(r["logtau"][-1])) for r in q if r["alive"][-1] > 0]
                 print(f"tau0={t0:>8}: alive at end {sum(r['alive'][-1] > 0 for r in q)}/8, body tau at end "
                       f"median {np.median(ends) if ends else float('nan'):.0f}  range {np.min(ends) if ends else 0:.0f}-{np.max(ends) if ends else 0:.0f}, "
                       f"lifetime income {np.mean([r['life_income'] for r in q]):.2f}", flush=True)
