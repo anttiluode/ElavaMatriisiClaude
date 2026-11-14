@@ -82,6 +82,7 @@ def default_params():
         Ddead=0.02,   # below this a channel no longer conducts
         Dwood=0.35,   # above this a segment is woody (others can wrap on it, it can bud)
         pb=1e-4,      # budding probability per woody segment per step
+        pb_root=0.002,  # the pot resprouts much more readily (a stump buds from its base)
         cbud=1.0,     # cost of a new bud
         maxchild=2,
         earn_frac=0.5,  # a shoot pays for itself if its tip delivers > earn_frac * s0
@@ -103,7 +104,7 @@ def default_params():
 NMAX = 40000
 PKEYS = ["gp", "Dh", "Dmax", "Qh", "eta", "m", "kfree", "s0", "tau", "kR", "cgrow",
          "D0", "Ddead", "Dwood", "pb", "cbud", "maxchild", "earn_frac", "gstarve",
-         "rho", "cmat", "bu", "bs", "bl", "free", "lam", "Tdry", "Rfree"]
+         "rho", "cmat", "bu", "bs", "bl", "free", "lam", "Tdry", "Rfree", "pb_root"]
 NST = 14   # R, prod, deliv, draw, upkeep, famine, n_alive, n_dry, grow_events,
            # grow_on_own_wood, grow_on_room_support, grow_unsupported,
            # deaths (channels that closed), sum of light on segments when they closed
@@ -194,6 +195,7 @@ def step(n, px, py, parent, D, alive, tip, G, a, nchild, Q, deliv, prod, occ, dr
     rho, cmat, bu, bs, bl, free, lam, Tdry = (pv[19], pv[20], pv[21], pv[22], pv[23], pv[24],
                                               pv[25], pv[26])
     Rfree = pv[27]
+    pb_root = pv[28]
     free_mode = free > 0.5
     R = st[0]
     ri = 0
@@ -372,7 +374,7 @@ def step(n, px, py, parent, D, alive, tip, G, a, nchild, Q, deliv, prod, occ, dr
             continue
         u = rand_u[ri % nr]
         ri += 1
-        if u > pb:
+        if u > (pb if i > 0 else pb_root):
             continue
         x, y = px[i], py[i]
         for kk in range(8):
